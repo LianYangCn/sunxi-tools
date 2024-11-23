@@ -428,11 +428,13 @@ void aw_fel_spiflash_read(feldev_handle *dev,
  */
 
 #define CMD_WRITE_ENABLE 0x06
+#define CMD_EXTNADDR_WREAR 0xC5
 
 void aw_fel_spiflash_write_helper(feldev_handle *dev,
 				  uint32_t offset, void *buf, size_t len,
 				  size_t erase_size, uint8_t erase_cmd,
-				  size_t program_size, uint8_t program_cmd)
+				  size_t program_size, uint8_t program_cmd,
+				  size_t* cur_bank)
 {
 	soc_info_t *soc_info = dev->soc_info;
 	uint8_t *buf8 = (uint8_t *)buf;
@@ -445,6 +447,32 @@ void aw_fel_spiflash_write_helper(feldev_handle *dev,
 	cmd_idx = 0;
 
 	prepare_spi_batch_data_transfer(dev, soc_info->spl_addr);
+
+	uint32_t bank = (offset >> 24);
+	if ((*cur_bank) != bank)
+	{
+		/* Emit write enable command */
+    	cmdbuf[cmd_idx++] = 0;
+    	cmdbuf[cmd_idx++] = 1;
+    	cmdbuf[cmd_idx++] = CMD_WRITE_ENABLE;
+    	/* Emit write bank */
+    	cmdbuf[cmd_idx++] = 0;
+    	cmdbuf[cmd_idx++] = 2;
+    	cmdbuf[cmd_idx++] = CMD_EXTNADDR_WREAR;
+    	cmdbuf[cmd_idx++] = bank;
+    	/* Emit wait for completion */
+    	cmdbuf[cmd_idx++] = 0xFF;
+    	cmdbuf[cmd_idx++] = 0xFF;
+    	/* Emit the end marker */
+    	cmdbuf[cmd_idx++] = 0;
+    	cmdbuf[cmd_idx++] = 0;
+    	aw_fel_write(dev, cmdbuf, dev->soc_info->spl_addr, cmd_idx);
+    	aw_fel_remotefunc_execute(dev, NULL);
+		// update
+		(*cur_bank) = bank;
+	}
+
+	cmd_idx = 0;
 
 	while (len > 0) {
 		while (len > 0 && max_chunk_size - cmd_idx > program_size + 64) {
@@ -518,6 +546,7 @@ void aw_fel_spiflash_write(feldev_handle *dev,
 	if (!spi0_init(dev))
 		return;
 
+	size_t cur_bank = -1;
 	progress_start(progress, len);
 	while (len > 0) {
 		size_t write_count;
@@ -530,7 +559,8 @@ void aw_fel_spiflash_write(feldev_handle *dev,
 			aw_fel_spiflash_write_helper(dev, offset, buf8,
 				write_count,
 				flash_info->small_erase_size, flash_info->small_erase_cmd,
-				flash_info->program_size, flash_info->program_cmd);
+				flash_info->program_size, flash_info->program_cmd,
+				&cur_bank);
 		} else {
 			write_count = flash_info->large_erase_size;
 			if (write_count > len)
@@ -538,7 +568,8 @@ void aw_fel_spiflash_write(feldev_handle *dev,
 			aw_fel_spiflash_write_helper(dev, offset, buf8,
 				write_count,
 				flash_info->large_erase_size, flash_info->large_erase_cmd,
-				flash_info->program_size, flash_info->program_cmd);
+				flash_info->program_size, flash_info->program_cmd,
+				&cur_bank);
 		}
 
 		len    -= write_count;
